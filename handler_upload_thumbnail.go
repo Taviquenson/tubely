@@ -1,10 +1,12 @@
 package main
 
 import (
-	"encoding/base64"
 	"fmt"
 	"io"
 	"net/http"
+	"os"
+	"path/filepath"
+	"strings"
 
 	"github.com/bootdotdev/learn-file-storage-s3-golang-starter/internal/auth"
 	"github.com/google/uuid"
@@ -32,27 +34,17 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 
 	fmt.Println("uploading thumbnail for video", videoID, "by user", userID)
 
-	// TODO: implement the upload here
+	// Upload
 	const maxMemory = 10 << 20 // Set to 10MB
 	r.ParseMultipartForm(maxMemory)
 
 	// "thumbnail" should match the HTML form input name
-	file, header, err := r.FormFile("thumbnail")
+	mFile, header, err := r.FormFile("thumbnail")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
 		return
 	}
-	defer file.Close()
-
-	// Get the media type from the form file's Content-Type header
-	mediaType := header.Header.Get("Content-Type")
-
-	// Read all the image data into a byte slice
-	imgData, err := io.ReadAll(file)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Unable to read parsed file", err)
-		return
-	}
+	defer mFile.Close()
 
 	// Get the video's metadata
 	dbVideo, err := cfg.db.GetVideo(videoID)
@@ -66,16 +58,31 @@ func (cfg *apiConfig) handlerUploadThumbnail(w http.ResponseWriter, r *http.Requ
 		return
 	}
 
-	tn := thumbnail{
-		data:      imgData,
-		mediaType: mediaType,
+	// Get the media type from the form file's Content-Type header
+	mediaType := header.Header.Get("Content-Type")
+	// Determine the file extension from mediaType
+	parts := strings.Split(mediaType, "/")
+	fileExt := parts[1]
+	// Build file path: /assets/<videoID>.<file_extension>
+	fileName := videoIDString + "." + fileExt
+	filePath := filepath.Join(cfg.assetsRoot, fileName)
+
+	// Create the new file in the system
+	file, err := os.Create(filePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't create file in system storage", err)
+		return
+	}
+	// Copy contents from multipart file to system file
+	_, err = io.Copy(file, mFile)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Couldn't copy contents to system file", err)
+		return
 	}
 
-	// Convert the image data to a base64 string
-	imgString := base64.StdEncoding.EncodeToString(imgData)
-
-	dataURL := fmt.Sprintf("data:%s;base64,%s", tn.mediaType, imgString)
-	dbVideo.ThumbnailURL = &dataURL
+	thumbnailURL := fmt.Sprintf("http://localhost:%s/assets/%s.%s", cfg.port, videoIDString, fileExt)
+	dbVideo.ThumbnailURL = &thumbnailURL
+	// in main.go we have a file server that serves files from the /assets directory
 
 	err = cfg.db.UpdateVideo(dbVideo)
 	if err != nil {
