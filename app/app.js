@@ -261,7 +261,14 @@ function viewVideo(video) {
     thumbnailImg.style.display = 'none';
   } else {
     thumbnailImg.style.display = 'block';
-    thumbnailImg.src = video.thumbnail_url;
+    // We will implement "cache busting" here (from the client side)
+    // by adding a query to the url of the thumbnail we are requesting
+    // to the server. That way it is always different from the client's
+    // perspective, but it remains the same from the server's persepctive
+    // because servers typically ignore query strings for file-like assets.
+    // So we update the line of code below to include current time in
+    // milliseconds as part of a query value called v:
+    thumbnailImg.src = `${video.thumbnail_url}?v=${Date.now()}`;
   }
 
   const videoPlayer = document.getElementById('video-player');
