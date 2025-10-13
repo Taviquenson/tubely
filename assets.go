@@ -40,3 +40,7 @@ func (cfg apiConfig) getAssetURL(assetPath string) string {
 	return fmt.Sprintf("http://localhost:%s/assets/%s", cfg.port, assetPath)
 	// in main.go we have a file server that serves files from the /assets directory
 }
+
+func (cfg apiConfig) getObjectURL(key string) string {
+	return fmt.Sprintf("https://%s.s3.%s.amazonaws.com/%s", cfg.s3Bucket, cfg.s3Region, key)
+}

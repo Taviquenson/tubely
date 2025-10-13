@@ -82,11 +82,11 @@ func main() {
 	}
 
 	// auto load the default AWS SDK config (the keys you set with aws configure)
-	awsConfig, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(s3Region)) // returns a aws.Config interface
+	awsConfig, err := config.LoadDefaultConfig(context.Background(), config.WithRegion(s3Region))
 	if err != nil {
-		log.Fatal("Auto load of the AWS default config failed")
+		log.Fatal(err)
 	}
-	s3Client := s3.NewFromConfig(awsConfig) // returns a *s3.Client interface pointer                                                    // returns a *Client
+	s3Client := s3.NewFromConfig(awsConfig)
 
 	cfg := apiConfig{
 		db:               db,
