@@ -83,6 +83,13 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
+	// Get the aspect ratio of the video file
+	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not get video aspect ratio", err)
+		return
+	}
+
 	// Reset the tempFile's file pointer to the beginning to allow us to read the file again from the beginning
 	_, err = tempFile.Seek(0, io.SeekStart)
 	if err != nil {
@@ -92,6 +99,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	// Put the object into S3
 	key := getAssetPath(mediaType)
+	key = addPrefixSchema(aspectRatio, key)
 	putObjectInput := s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(key), // The file name using <random-32-byte-hex>.ext format
