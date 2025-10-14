@@ -1,10 +1,16 @@
 package main
 
 import (
+	"encoding/json"
+	"errors"
+	"fmt"
 	"io"
+	"math"
 	"mime"
 	"net/http"
 	"os"
+	"os/exec"
+	"path"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
@@ -84,10 +90,19 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Get the aspect ratio of the video file
+	directory := ""
 	aspectRatio, err := getVideoAspectRatio(tempFile.Name())
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Could not get video aspect ratio", err)
+		respondWithError(w, http.StatusInternalServerError, "Error determining aspect ratio", err)
 		return
+	}
+	switch aspectRatio {
+	case "16:9":
+		directory = "landscape"
+	case "9:16":
+		directory = "portrait"
+	default:
+		directory = "other"
 	}
 
 	// Reset the tempFile's file pointer to the beginning to allow us to read the file again from the beginning
@@ -99,7 +114,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 
 	// Put the object into S3
 	key := getAssetPath(mediaType)
-	key = addPrefixSchema(aspectRatio, key)
+	key = path.Join(directory, key)
 	putObjectInput := s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(key), // The file name using <random-32-byte-hex>.ext format
@@ -122,4 +137,41 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	respondWithJSON(w, http.StatusOK, dbVideo)
+}
+
+func getVideoAspectRatio(filePath string) (string, error) {
+	// Get "streams" video info
+	cmd := exec.Command("ffprobe", "-v", "error", "-print_format", "json", "-show_streams", filePath)
+	out, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("ffprobe error: %v", err)
+	}
+	// Unmarshal the stdout of the command into a JSON struct
+	var output struct {
+		Streams []struct {
+			Width  int `json:"width"`
+			Height int `json:"height"`
+		} `json:"streams"`
+	}
+	err = json.Unmarshal(out, &output)
+	if err != nil {
+		return "", fmt.Errorf("could not parse ffprobe output: %v", err)
+	}
+	// The ffprobe can return an empty array of streams
+	if len(output.Streams) == 0 {
+		return "", errors.New("no video streams found")
+	}
+
+	// Determine video's aspect ratio
+	width := float64(output.Streams[0].Width)
+	height := float64(output.Streams[0].Height)
+	// 9 / 16 = 0.562962963
+	// 16 / 9 = 1.7777777778
+	ratio := math.Floor((width/height)*100) / 100
+	if ratio > 0.54 && ratio < 0.58 {
+		return "9:16", nil
+	} else if ratio > 1.74 && ratio < 1.78 {
+		return "16:9", nil
+	}
+	return "other", nil
 }
