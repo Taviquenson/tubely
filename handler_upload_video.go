@@ -1,6 +1,7 @@
 package main
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -74,20 +75,34 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		return
 	}
 
-	// Save the uploaded file to a temporary file on disk
-	tempFile, err := os.CreateTemp(cfg.assetsRoot, "tubely-upload-*.mp4")
+	// Create temp empty system file on which to write the unprocessed video
+	tempFileUnprocessed, err := os.CreateTemp(cfg.assetsRoot, "tubely-upload-*.mp4")
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not create temp file", err)
 		return
 	}
-	defer os.Remove(tempFile.Name())
-	defer tempFile.Close()
+	defer os.Remove(tempFileUnprocessed.Name())
+	defer tempFileUnprocessed.Close()
 
-	// Copy contents from multipart file to system file
-	if _, err = io.Copy(tempFile, file); err != nil {
+	// Copy contents from multipart file to temp empty system file
+	if _, err = io.Copy(tempFileUnprocessed, file); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not write file to disk", err)
 		return
 	}
+
+	// Create a processed version of the video
+	filePath, err := processVideoForFastStart(tempFileUnprocessed.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error processing video for fast start", err)
+		return
+	}
+	tempFile, err := os.Open(filePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error opening file for processed video", err)
+		return
+	}
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
 
 	// Get the aspect ratio of the video file
 	directory := ""
@@ -106,11 +121,11 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Reset the tempFile's file pointer to the beginning to allow us to read the file again from the beginning
-	_, err = tempFile.Seek(0, io.SeekStart)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Could not reset file pointer", err)
-		return
-	}
+	// _, err = tempFile.Seek(0, io.SeekStart)
+	// if err != nil {
+	// 	respondWithError(w, http.StatusInternalServerError, "Could not reset file pointer", err)
+	// 	return
+	// }
 
 	// Put the object into S3
 	key := getAssetPath(mediaType)
@@ -174,4 +189,17 @@ func getVideoAspectRatio(filePath string) (string, error) {
 		return "16:9", nil
 	}
 	return "other", nil
+}
+
+func processVideoForFastStart(filePath string) (string, error) {
+	outputFilePath := filePath + ".processing"
+	// Process filePath video
+	cmd := exec.Command("ffmpeg", "-y", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath)
+	var stderr bytes.Buffer
+	cmd.Stderr = &stderr
+	_, err := cmd.Output()
+	if err != nil {
+		return "", fmt.Errorf("ffmpeg error: %v, stderr: %s", err, stderr.String())
+	}
+	return outputFilePath, nil
 }
