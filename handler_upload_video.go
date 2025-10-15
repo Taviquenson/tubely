@@ -55,7 +55,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	const uploadLimit = 1 << 30 // Set to 1GB
 	r.Body = http.MaxBytesReader(w, r.Body, uploadLimit)
 
-	// "thumbnail" should match the HTML form input name
+	// "video" should match the HTML form input name
 	file, header, err := r.FormFile("video")
 	if err != nil {
 		respondWithError(w, http.StatusBadRequest, "Unable to parse form file", err)
@@ -76,33 +76,26 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	}
 
 	// Create temp empty system file on which to write the unprocessed video
-	tempFileUnprocessed, err := os.CreateTemp(cfg.assetsRoot, "tubely-upload-*.mp4")
+	tempFile, err := os.CreateTemp(cfg.assetsRoot, "tubely-upload-*.mp4")
 	if err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not create temp file", err)
 		return
 	}
-	defer os.Remove(tempFileUnprocessed.Name())
-	defer tempFileUnprocessed.Close()
+	defer os.Remove(tempFile.Name())
+	defer tempFile.Close()
 
 	// Copy contents from multipart file to temp empty system file
-	if _, err = io.Copy(tempFileUnprocessed, file); err != nil {
+	if _, err = io.Copy(tempFile, file); err != nil {
 		respondWithError(w, http.StatusInternalServerError, "Could not write file to disk", err)
 		return
 	}
 
-	// Create a processed version of the video
-	filePath, err := processVideoForFastStart(tempFileUnprocessed.Name())
+	// Reset the tempFile's file pointer to the beginning to allow us to read the file again from the beginning
+	_, err = tempFile.Seek(0, io.SeekStart)
 	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error processing video for fast start", err)
+		respondWithError(w, http.StatusInternalServerError, "Could not reset file pointer", err)
 		return
 	}
-	tempFile, err := os.Open(filePath)
-	if err != nil {
-		respondWithError(w, http.StatusInternalServerError, "Error opening file for processed video", err)
-		return
-	}
-	defer os.Remove(tempFile.Name())
-	defer tempFile.Close()
 
 	// Get the aspect ratio of the video file
 	directory := ""
@@ -120,12 +113,20 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 		directory = "other"
 	}
 
-	// Reset the tempFile's file pointer to the beginning to allow us to read the file again from the beginning
-	// _, err = tempFile.Seek(0, io.SeekStart)
-	// if err != nil {
-	// 	respondWithError(w, http.StatusInternalServerError, "Could not reset file pointer", err)
-	// 	return
-	// }
+	// Create a processed version of the video
+	processedFilePath, err := processVideoForFastStart(tempFile.Name())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Error processing video", err)
+		return
+	}
+	defer os.Remove(processedFilePath)
+
+	processedFile, err := os.Open(processedFilePath)
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Could not open processed file", err)
+		return
+	}
+	defer processedFile.Close()
 
 	// Put the object into S3
 	key := getAssetPath(mediaType)
@@ -133,7 +134,7 @@ func (cfg *apiConfig) handlerUploadVideo(w http.ResponseWriter, r *http.Request)
 	putObjectInput := s3.PutObjectInput{
 		Bucket:      aws.String(cfg.s3Bucket),
 		Key:         aws.String(key), // The file name using <random-32-byte-hex>.ext format
-		Body:        tempFile,
+		Body:        processedFile,
 		ContentType: aws.String(mediaType),
 	}
 	_, err = cfg.s3Client.PutObject(r.Context(), &putObjectInput)
@@ -191,15 +192,25 @@ func getVideoAspectRatio(filePath string) (string, error) {
 	return "other", nil
 }
 
-func processVideoForFastStart(filePath string) (string, error) {
-	outputFilePath := filePath + ".processing"
+func processVideoForFastStart(inputFilePath string) (string, error) {
+	processedFilePath := fmt.Sprintf("%s.processing", inputFilePath)
 	// Process filePath video
-	cmd := exec.Command("ffmpeg", "-y", "-i", filePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", outputFilePath)
+	cmd := exec.Command("ffmpeg", "-i", inputFilePath, "-c", "copy", "-movflags", "faststart", "-f", "mp4", processedFilePath)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	_, err := cmd.Output()
-	if err != nil {
-		return "", fmt.Errorf("ffmpeg error: %v, stderr: %s", err, stderr.String())
+
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("error processing video: %s, %v", stderr.String(), err)
 	}
-	return outputFilePath, nil
+
+	// Checks file integrity (if file can be described and has data)
+	fileInfo, err := os.Stat(processedFilePath)
+	if err != nil {
+		return "", fmt.Errorf("could not stat processed file: %v", err)
+	}
+	if fileInfo.Size() == 0 {
+		return "", fmt.Errorf("processed file is empty")
+	}
+
+	return processedFilePath, nil
 }
